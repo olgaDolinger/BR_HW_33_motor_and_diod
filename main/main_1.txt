@@ -1,0 +1,90 @@
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/ledc.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_err.h"
+
+#define LED_PIN_1        4
+#define LED_PIN_2        5
+#define LEDC_MODE        LEDC_LOW_SPEED_MODE   // на ESP32-S3 доступний лише low-speed
+#define LEDC_CHANNEL1    LEDC_CHANNEL_0
+#define LEDC_CHANNEL2    LEDC_CHANNEL_1
+#define LEDC_TIMER_NUM   LEDC_TIMER_0
+#define LEDC_FREQUENCY   1000                  // 1 kHz
+#define LEDC_BITS        10
+#define LEDC_RESOLUTION  LEDC_TIMER_10_BIT     // має збігатися з LEDC_BITS
+#define LEDC_MAX_DUTY    ((1 << LEDC_BITS) - 1) // 1023
+
+static void set_duty(ledc_channel_t channel, uint32_t duty)
+{
+    ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, channel, duty));
+    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, channel));
+}
+
+static void set_leds(uint32_t brightness)
+{
+    set_duty(LEDC_CHANNEL1, brightness);                  // LED 1: як є
+    set_duty(LEDC_CHANNEL2, LEDC_MAX_DUTY - brightness);  // LED 2: навпаки
+}
+
+static void ledc_init(void)
+{
+    // Один таймер на обидва світлодіоди
+    ledc_timer_config_t timer_config = {
+        .speed_mode      = LEDC_MODE,
+        .duty_resolution = LEDC_RESOLUTION,
+        .timer_num       = LEDC_TIMER_NUM,
+        .freq_hz         = LEDC_FREQUENCY,
+        .clk_cfg         = LEDC_AUTO_CLK
+    };
+    ESP_ERROR_CHECK(ledc_timer_config(&timer_config));
+
+    // Канал 0 → LED 1
+    ledc_channel_config_t ch1 = {
+        .gpio_num   = LED_PIN_1,
+        .speed_mode = LEDC_MODE,
+        .channel    = LEDC_CHANNEL1,
+        .intr_type  = LEDC_INTR_DISABLE,
+        .timer_sel  = LEDC_TIMER_NUM,
+        .duty       = 0,
+        .hpoint     = 0
+    };
+    ESP_ERROR_CHECK(ledc_channel_config(&ch1));
+
+    // Канал 1 → LED 2 (той самий таймер, інший пін і власний duty)
+    ledc_channel_config_t ch2 = {
+        .gpio_num   = LED_PIN_2,
+        .speed_mode = LEDC_MODE,
+        .channel    = LEDC_CHANNEL2,
+        .intr_type  = LEDC_INTR_DISABLE,
+        .timer_sel  = LEDC_TIMER_NUM,
+        .duty       = LEDC_MAX_DUTY,   // старт у протифазі: LED 2 світить на повну
+        .hpoint     = 0
+    };
+    ESP_ERROR_CHECK(ledc_channel_config(&ch2));
+}
+
+
+void app_main(void)
+{
+    ledc_init();
+    adc_init();
+
+    while (1) {
+        // LED 1 світлішає, LED 2 гасне
+        for (int b = 0; b <= LEDC_MAX_DUTY; b += 10) {
+            set_leds(b);
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        set_leds(LEDC_MAX_DUTY);
+        vTaskDelay(pdMS_TO_TICKS(500));
+
+        // LED 1 гасне, LED 2 світлішає
+        for (int b = LEDC_MAX_DUTY; b >= 0; b -= 10) {
+            set_leds(b);
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        set_leds(0);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
